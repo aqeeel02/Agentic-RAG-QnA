@@ -1,0 +1,9 @@
+streamlit
+python-docx
+python-pptx
+PyMuPDF
+pandas
+markdown
+faiss-cpu       
+sentence-transformers  
+transformers

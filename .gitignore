@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+data/
+*.pkl
+*.index
+*.csv
+*.pptx
+*.pdf
+rag_env/
+venv/
+.env
+
+
