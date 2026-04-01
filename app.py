@@ -6,6 +6,7 @@ from agents.ingestion_agent import IngestionAgent
 from agents.retrieval_agent import RetrievalAgent
 from agents.llm_response_agent import LLMResponseAgent
 from agents.planner_agent import PlannerAgent  # ✅ NEW
+llm = LLMResponseAgent()
 
 # -------------------- PAGE SETUP --------------------
 st.set_page_config(page_title="Agentic RAG Chatbot", layout="centered")
@@ -69,21 +70,7 @@ if st.button("Get Answer"):
             print("🧠 PLAN:", steps)
 
             # -------------------- STEP 4: RETRIEVE CONTEXT --------------------
-            rewrite_query = f"Rewrite this query for better document search:\n{query}"
-
-            rewrite_msg = {
-                "payload": {
-                    "top_chunks": [],
-                    "query": rewrite_query
-                }
-            }
-
-            better_query = llm.generate_response(rewrite_msg)["payload"]["answer"]
-
-            print("🔁 REWRITTEN QUERY:", better_query)
-
-            # Use improved query
-            retrieved_msg = retrieval.retrieve(better_query)
+            retrieved_msg = retrieval.retrieve(query)
 
             # -------------------- STEP 5: DRAFT ANSWER --------------------
             llm = LLMResponseAgent()                
