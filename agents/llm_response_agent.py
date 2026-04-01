@@ -1,6 +1,8 @@
 import os
 from groq import Groq
 from mcp.protocol import create_mcp_message
+from dotenv import load_dotenv
+load_dotenv()
 
 
 class LLMResponseAgent:
@@ -9,7 +11,7 @@ class LLMResponseAgent:
 
         # ⚠️ Move to env variable later
         import os
-        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
     # -------------------- CONTEXT EXTRACTION --------------------
     def format_context(self, context_chunks):
