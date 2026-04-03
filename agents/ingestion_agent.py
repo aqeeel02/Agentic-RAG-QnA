@@ -11,35 +11,37 @@ class IngestionAgent:
     def ingest(self):
         docs = {}
 
-        # Check if data folder exists
-        if not os.path.exists(self.folder):
-            print(f"❌ Folder '{self.folder}' does not exist.")
-            return create_mcp_message(
-                sender="IngestionAgent",
-                receiver="RetrievalAgent",
-                msg_type="INGESTION_FAILED",
-                payload={"error": "Folder not found"}
-            )
-
-        # Loop through files and parse them
         for filename in os.listdir(self.folder):
             file_path = os.path.join(self.folder, filename)
+
             if os.path.isfile(file_path):
-                print(f"📂 Parsing file: {filename}")
                 try:
                     content = parse_file(file_path)
-                    docs[filename] = content.strip() if isinstance(content, str) else ""
+
+                    if not isinstance(content, str):
+                        continue
+
+                    # 🔥 CLEAN TEXT
+                    content = content.replace("\n", " ").strip()
+
+                    # 🔥 FILTER SMALL DOCS
+                    if len(content) < 50:
+                        continue
+
+                    docs[filename] = content
+
                 except Exception as e:
                     print(f"❌ Failed to parse {filename}: {e}")
 
         if not docs:
-            print("⚠️ No documents successfully parsed.")
             return create_mcp_message(
                 sender="IngestionAgent",
                 receiver="RetrievalAgent",
                 msg_type="INGESTION_FAILED",
-                payload={"error": "No documents parsed."}
+                payload={"error": "No valid documents"}
             )
+
+        print(f"✅ Loaded {len(docs)} documents")
 
         return create_mcp_message(
             sender="IngestionAgent",

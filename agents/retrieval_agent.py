@@ -102,17 +102,8 @@ class RetrievalAgent:
 
     # -------------------- RETRIEVAL --------------------
     def retrieve(self, query):
-        if not query or not query.strip():
-            return create_mcp_message(
-                sender="RetrievalAgent",
-                receiver="LLMResponseAgent",
-                msg_type="RETRIEVAL_FAILED",
-                payload={"error": "Empty query provided."}
-            )
-
         query_embedding = self.embedder.embed_texts([query])[0]
 
-        # 🔥 Increase recall
         candidates = self.vector_store.search(query_embedding, k=8)
 
         if not candidates:
@@ -124,15 +115,12 @@ class RetrievalAgent:
             )
 
         reranked = self.rerank(query, candidates)
-
         top_chunks = reranked[:3]
 
-        # 🧪 DEBUG (very useful)
-        print("\n🔍 Retrieved Chunks:\n")
-        for chunk in top_chunks:
-            print("SOURCE:", chunk.get("metadata", {}).get("source"))
-            print(chunk.get("text", "")[:200])
-            print("------")
+        # 🔥 ADD SCORE CALCULATION
+        avg_score = sum(doc.get("score", 0) for doc in top_chunks) / len(top_chunks)
+
+        print(f"\n📊 Retrieval Score: {avg_score:.2f}")
 
         return create_mcp_message(
             sender="RetrievalAgent",
@@ -140,6 +128,7 @@ class RetrievalAgent:
             msg_type="CONTEXT_RESPONSE",
             payload={
                 "top_chunks": top_chunks,
-                "query": query
+                "query": query,
+                "score": avg_score  # 🔥 NEW
             }
         )
