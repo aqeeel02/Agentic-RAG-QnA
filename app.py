@@ -5,24 +5,31 @@ import shutil
 from agents.ingestion_agent import IngestionAgent
 from agents.retrieval_agent import RetrievalAgent
 from agents.llm_response_agent import LLMResponseAgent
-from agents.planner_agent import PlannerAgent  # ✅ NEW
-llm = LLMResponseAgent()
+from agents.planner_agent import PlannerAgent
+from agents.tools import (
+    retrieval_tool,
+    llm_general_tool,
+    rewrite_tool,
+    clarify_tool
+)
 
 # -------------------- PAGE SETUP --------------------
 st.set_page_config(page_title="Agentic RAG Chatbot", layout="centered")
 st.title("🤖 Agentic RAG Chatbot")
 
+# -------------------- INIT AGENTS --------------------
+retrieval = RetrievalAgent()
+llm_agent = LLMResponseAgent()
+planner = PlannerAgent(llm_agent)
+
 # -------------------- RESET --------------------
 if st.button("🔄 Reset"):
     if os.path.exists("data"):
         shutil.rmtree("data")
-
-    # also reset vector DB files
     if os.path.exists("faiss_index.index"):
         os.remove("faiss_index.index")
     if os.path.exists("metadata.pkl"):
         os.remove("metadata.pkl")
-
     st.session_state.clear()
     st.success("Chat and uploaded files have been reset.")
 
@@ -35,17 +42,21 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-if uploaded_files:
+if uploaded_files and not st.session_state.get("documents_loaded"):
     os.makedirs("data", exist_ok=True)
 
     for file in uploaded_files:
-        file_path = os.path.join("data", file.name)
-        with open(file_path, "wb") as f:
+        with open(os.path.join("data", file.name), "wb") as f:
             f.write(file.read())
 
-    st.success("✅ Files uploaded successfully!")
+    ingestion = IngestionAgent()
+    ingestion_msg = ingestion.ingest()
+    retrieval.process_documents(ingestion_msg)
 
-# -------------------- ASK A QUESTION --------------------
+    st.session_state["documents_loaded"] = True
+    st.success("✅ Documents processed and indexed!")
+
+# -------------------- ASK QUESTION --------------------
 st.header("💬 Ask a Question")
 
 query = st.text_input("Type your question here:")
@@ -53,82 +64,95 @@ query = st.text_input("Type your question here:")
 if st.button("Get Answer"):
     if not query:
         st.warning("Please enter a question.")
-    else:
-        with st.spinner("🧠 Processing..."):
+        st.stop()
 
-            # -------------------- STEP 1: INGEST --------------------
-            ingestion = IngestionAgent()
-            ingestion_msg = ingestion.ingest()
+    with st.spinner("🧠 Thinking..."):
 
-            # -------------------- STEP 2: RETRIEVE --------------------
-            retrieval = RetrievalAgent()
-            retrieval.process_documents(ingestion_msg)
+        current_query = query
+        retrieval_score = None
+        answered = False
 
-            # -------------------- STEP 3: PLANNER --------------------
-            planner = PlannerAgent()
-            steps = planner.plan(query)
-            print("🧠 PLAN:", steps)
+        for attempt in range(3):
+            decision = planner.select_tool(current_query, retrieval_score, attempt)
+            tool = decision["tool"]
 
-            # -------------------- STEP 4: RETRIEVE CONTEXT --------------------
-            retrieved_msg = retrieval.retrieve(query)
+            st.caption(f"🧠 Tool selected: **{tool}** (attempt {attempt + 1})")
 
-            # -------------------- STEP 5: DRAFT ANSWER --------------------
-            llm = LLMResponseAgent()                
-            draft_response = llm.generate_response(retrieved_msg)
-            draft_answer = draft_response["payload"]["answer"]
+            # ── RETRIEVAL ──
+            if tool == "retrieval":
+                # Only retrieve if documents are loaded
+                if not st.session_state.get("documents_loaded"):
+                    # No docs — treat as general question immediately
+                    answer = llm_general_tool(llm_agent, current_query)["answer"]
+                    st.info("💡 No documents uploaded — answering from general knowledge")
+                    st.subheader("💡 Answer:")
+                    st.success(answer)
+                    answered = True
+                    break
 
-            # -------------------- STEP 6: REFINE ANSWER --------------------
-            refine_query = f"Improve and refine this answer:\n{draft_answer}"
+                result = retrieval_tool(retrieval, current_query)
 
-            refined_msg = {
-                "payload": {
-                    "top_chunks": retrieved_msg["payload"]["top_chunks"],
-                    "query": refine_query
-                }
-            }
+                if result["chunks"]:
+                    response = llm_agent.generate_response(result["msg"])
+                    answer = response["payload"]["answer"]
 
-            refined_response = llm.generate_response(refined_msg)
+                    # If LLM says not found in doc → escalate to general
+                    not_found_phrases = [
+                        "not found in the document",
+                        "not mentioned in the document",
+                        "not in the document",
+                        "no information",
+                        "cannot find"
+                    ]
+                    if any(phrase in answer.lower() for phrase in not_found_phrases):
+                        # Document had chunks but answer wasn't there
+                        # Try general knowledge
+                        retrieval_score = 0.2
+                        continue
 
-            # -------------------- STEP 7: SELF-CHECK --------------------
-            check_query = f"Check if this answer is correct based on context. If not, fix it:\n{refined_response['payload']['answer']}"
+                    st.subheader("💡 Answer:")
+                    st.success(answer)
 
-            check_msg = {
-                "payload": {
-                    "top_chunks": retrieved_msg["payload"]["top_chunks"],
-                    "query": check_query
-                }
-            }
+                    sources = response["payload"].get("sources", [])
+                    if sources:
+                        st.subheader("📚 Sources")
+                        for src in sources:
+                            st.info(src["text"][:200] + "...")
 
-            final_response = llm.generate_response(check_msg)
+                    answered = True
+                    break
 
-            response = final_response
+                else:
+                    # No chunks retrieved at all
+                    retrieval_score = result.get("score", 0.1)
+                    continue
 
-            print("DEBUG RESPONSE:", response)
+            # ── REWRITE ──
+            elif tool == "rewrite":
+                new_query = planner.rewrite_query(current_query)
+                st.info(f"🔄 Query rewritten: *{new_query}*")
+                current_query = new_query
+                retrieval_score = None
+                continue
 
-            # -------------------- OUTPUT --------------------
+            # ── GENERAL KNOWLEDGE ──
+            elif tool == "llm_general":
+                answer = llm_general_tool(llm_agent, current_query)["answer"]
+                st.caption("🌐 Answered from general knowledge")
+                st.subheader("💡 Answer:")
+                st.success(answer)
+                answered = True
+                break
+
+            # ── CLARIFY ──
+            elif tool == "clarify":
+                st.info(clarify_tool()["message"])
+                answered = True
+                break
+
+        # ── FINAL FALLBACK (loop exhausted without answer) ──
+        if not answered:
+            answer = llm_general_tool(llm_agent, current_query)["answer"]
+            st.caption("🌐 Fallback: answered from general knowledge")
             st.subheader("💡 Answer:")
-            st.success(response["payload"]["answer"])
-
-            st.subheader("📚 Sources")
-
-            sources = response["payload"].get("sources", [])
-
-            def extract_relevant_sentence(text, query):
-                sentences = text.split(".")
-                for s in sentences:
-                    if any(word.lower() in s.lower() for word in query.split()):
-                        return s.strip()
-                return text[:200]
-
-            if not sources:
-                st.warning("⚠️ No sources found.")
-            else:
-                for i, src in enumerate(sources, 1):
-                    text = src.get("text", "").replace("\n", " ").strip()
-                    source_name = src.get("source", "unknown")
-
-                    relevant_text = extract_relevant_sentence(text, query)
-
-                    st.markdown(f"**📌 Source {i}: {source_name}**")
-                    st.info(relevant_text[:300] + "...")
-                    st.write("---")
+            st.success(answer)
