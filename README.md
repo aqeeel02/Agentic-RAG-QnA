@@ -18,6 +18,8 @@ All LLM calls go through **Groq's API** using `llama-3.3-70b-versatile` for fast
 
 - 📁 **Multi-format document support** — PDF, DOCX, PPTX, CSV, TXT, and Markdown
 - 🔍 **Semantic search** using FAISS + `all-MiniLM-L6-v2` SentenceTransformer embeddings
+- 📐 **Smart chunking** — 400 token chunks with 80 token overlap, handled by the Retrieval Agent
+- 🏆 **Semantic reranking** — top-8 FAISS candidates reranked by entity match + keyword overlap before returning top-3
 - 🧠 **LLM-powered answers** via Groq API (LLaMA 3.3-70B) — fast and accurate
 - 🗂️ **Planner Agent** — dynamically selects the best tool for every query
 - 🔄 **Query rewriting** — automatically rewrites failed queries for better retrieval
@@ -39,15 +41,16 @@ User Query
     ▼
 ┌─────────────────────────────────────────────┐
 │             Ingestion Agent                 │
-│  file_parser.py → chunks text by file type  │
+│  file_parser.py → extracts raw text         │
 └────────────────────┬────────────────────────┘
-                     │ MCP Message
+                     │ MCP Message (raw text + source)
                      ▼
-┌─────────────────────────────────────────────┐
-│             Retrieval Agent                 │
-│  embedding_utils.py (all-MiniLM-L6-v2)      │
-│  → FAISS index → top-k semantic search      │
-└────────────────────┬────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│               Retrieval Agent                    │
+│  chunk_text() → 400 token chunks, 80 overlap     │
+│  embedding_utils.py (all-MiniLM-L6-v2)           │
+│  → FAISS index → top-8 search → rerank → top-3  │
+└────────────────────┬─────────────────────────────┘
                      │ MCP Message (chunks + score)
                      ▼
 ┌─────────────────────────────────────────────────────┐
@@ -77,7 +80,7 @@ User Query
 | Agent | File | Responsibility |
 |---|---|---|
 | **Ingestion Agent** | `agents/ingestion_agent.py` | Uses `file_parser.py` to parse all documents in `data/` into text chunks with source metadata, returned as an MCP message |
-| **Retrieval Agent** | `agents/retrieval_agent.py` | Uses `embedding_utils.py` to embed chunks with `all-MiniLM-L6-v2`, stores them in FAISS, and retrieves top-k relevant chunks for a query |
+| **Retrieval Agent** | `agents/retrieval_agent.py` | Chunks raw text (400 tokens, 80 overlap), embeds with `all-MiniLM-L6-v2`, indexes in FAISS, fetches top-8 candidates, then reranks by entity match + keyword overlap before returning top-3 |
 | **Planner Agent** | `agents/planner_agent.py` | Selects the best tool per attempt using rule-based logic and LLaMA; also rewrites failed queries via a dedicated Groq prompt |
 | **LLM Response Agent** | `agents/llm_response_agent.py` | Scores and deduplicates retrieved chunks, constructs a strict context-grounded prompt, calls Groq (LLaMA 3.3-70B), and returns a structured MCP answer |
 
@@ -242,10 +245,10 @@ A file-type dispatcher that routes each uploaded file to the correct parser — 
 A thin wrapper around SentenceTransformers that loads `all-MiniLM-L6-v2` and exposes an `embed_texts()` method. Used by the Retrieval Agent to encode both document chunks and incoming queries into the same vector space.
 
 ### Ingestion Agent
-Scans the `data/` directory, calls `file_parser.py` for each file, and wraps the resulting chunks in an MCP message with source metadata attached.
+Scans the `data/` directory, calls `file_parser.py` for each file, and wraps the resulting raw text in an MCP message with source metadata. It does **not** chunk — it hands off the full text to the Retrieval Agent.
 
 ### Retrieval Agent
-Calls `EmbeddingModel.embed_texts()` on all chunks, indexes them in FAISS, and on a query encodes it the same way before running nearest-neighbor search. Returns the top-k chunks with relevance scores via MCP message.
+The most complex agent in the pipeline. It first **chunks** the raw text into 400-token windows with 80-token overlap using `chunk_text()`. Each chunk is embedded using `EmbeddingModel.embed_texts()` and indexed in FAISS with metadata (`source`, `chunk_id`, `entities`). On a query, it fetches the **top-8 candidates** from FAISS, then **reranks** them using a scoring formula that boosts named entity matches (+2.5 per entity) and keyword overlap (+0.2 per word hit) on top of the base similarity score. The top-3 reranked chunks and their average score are returned via MCP message.
 
 ### Planner Agent
 The brain of the system. On each attempt it evaluates the query and retrieval score to pick the most appropriate tool. Uses LLaMA itself to reason about tool selection when the decision isn't purely rule-based. Also rewrites failed queries by prompting LLaMA for a more retrieval-friendly version.
