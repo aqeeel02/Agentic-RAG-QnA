@@ -116,8 +116,15 @@ if st.button("Get Answer"):
                     sources = response["payload"].get("sources", [])
                     if sources:
                         st.subheader("📚 Sources")
-                        for src in sources:
-                            st.info(src["text"][:200] + "...")
+                        for i, src in enumerate(sources, 1):
+                            source_name = src.get("source", "unknown")
+                            chunk_id = src.get("chunk_id")
+                            source_text = src.get("text", "").strip()
+                            label = f"Source {i} — {source_name}"
+                            if chunk_id is not None:
+                                label += f" (chunk {chunk_id})"
+                            with st.expander(label, expanded=True):
+                                st.write(source_text)
 
                     answered = True
                     break
